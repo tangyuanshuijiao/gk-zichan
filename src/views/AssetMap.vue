@@ -226,6 +226,8 @@ const currentMapCenter = ref({
 
 // 标记集合用于 fitView
 const markers = ref([])
+// 信息窗实例
+const infoWindow = ref(null)
 
 // 模拟资产数据 - 江西省鹰潭市房屋信息
 const assetList = ref([
@@ -523,6 +525,16 @@ const initMap = async () => {
 
     console.log('地图实例创建成功:', map.value)
 
+    // 创建信息窗（小弹窗）实例
+    try {
+      infoWindow.value = new window.AMap.InfoWindow({
+        isCustom: false,
+        offset: new window.AMap.Pixel(0, -28),
+      })
+    } catch (iwErr) {
+      console.warn('创建信息窗失败:', iwErr)
+    }
+
     // 等待地图渲染完成
     map.value.on('complete', () => {
       console.log('地图渲染完成')
@@ -547,22 +559,24 @@ const initMap = async () => {
       // 强制根据 assetList 的地址重新定位经纬度
       // calibrateAllCoordinates(true)
 
-      // 添加地图点击事件，显示点击位置的坐标
+      // 添加地图点击事件（仅打印日志，不再弹出信息窗/消息提示）
       map.value.on('click', (e) => {
+        // 点击空白处关闭信息窗
+        try {
+          infoWindow.value && infoWindow.value.close()
+        } catch {}
         const lng = e.lnglat.getLng()
         const lat = e.lnglat.getLat()
         console.log('地图点击位置坐标:', lng, lat)
 
-        // 使用地理编码获取地址（限定鹰潭市，提高准确度）
+        // 如需地址，可保留逆地理编码但不提示消息
         const geocoder = new AMap.Geocoder({ city: '360600' })
         geocoder.getAddress([lng, lat], (status, result) => {
           if (status === 'complete' && result.info === 'OK') {
             const address = result.regeocode.formattedAddress
             console.log('点击位置地址:', address)
-            ElMessage.info(`坐标: ${lng.toFixed(6)}, ${lat.toFixed(6)}\n地址: ${address}`)
           } else {
             console.error('逆地理编码失败:', status, result)
-            ElMessage.error(`逆地理编码失败: ${result?.info || status}`)
           }
         })
       })
@@ -594,99 +608,116 @@ const initMap = async () => {
 
 // 添加资产标记
 const addAssetMarkers = () => {
-  if (!map.value || !window.AMap) return
-
-  // 清除现有标记
-  map.value.clearMap()
-  markers.value = []
-
-  assetList.value.forEach((asset) => {
-    // 验证坐标的有效性
-    if (!asset.lng || !asset.lat || isNaN(parseFloat(asset.lng)) || isNaN(parseFloat(asset.lat))) {
-      console.warn(`资产 ${asset.assetName} 的坐标无效:`, asset.lng, asset.lat)
-      return
-    }
-
-    const lng = parseFloat(asset.lng)
-    const lat = parseFloat(asset.lat)
-
-    // 检查坐标是否在合理范围内（中国境内）
-    if (lng < 73 || lng > 135 || lat < 18 || lat > 54) {
-      console.warn(`资产 ${asset.assetName} 的坐标超出中国范围:`, lng, lat)
-      return
-    }
-
-    console.log(`添加资产标记: ${asset.assetName}, 坐标: ${lng}, ${lat}`)
-
-    // 根据资产状态选择不同的标记样式
-    const markerIcon = asset.isTransferred ? 'mark_b.png' : 'mark_r.png'
-
-    const marker = new window.AMap.Marker({
-      position: [lng, lat],
-      title: asset.assetName,
-      anchor: 'bottom-center',
-      icon: new window.AMap.Icon({
-        size: new window.AMap.Size(32, 32),
-        imageSize: new window.AMap.Size(32, 32),
-        image: `https://webapi.amap.com/theme/v1.3/markers/n/${markerIcon}`,
-      }),
-      zIndex: asset.isTransferred ? 100 : 50, // 已过户的资产标记层级更高
-    })
-
-    // 添加点击事件
-    marker.on('click', () => {
-      selectAsset(asset)
-    })
-
-    // 添加信息窗体
-    const infoWindow = new window.AMap.InfoWindow({
-      content: `
-        <div style="padding: 15px; min-width: 200px;">
-          <h4 style="margin: 0 0 10px 0; color: #303133;">${asset.assetName}</h4>
-          <p style="margin: 5px 0; font-size: 12px; color: #606266;">
-            <strong>地址：</strong>${asset.address}
-          </p>
-          <p style="margin: 5px 0; font-size: 12px; color: #606266;">
-            <strong>状态：</strong>
-            <span style="color: ${asset.isTransferred ? '#67C23A' : '#E6A23C'};">
-              ${asset.isTransferred ? '已过户' : '未过户'}
-            </span>
-          </p>
-          <p style="margin: 5px 0; font-size: 12px; color: #606266;">
-            <strong>月租金：</strong>¥${asset.rent.toLocaleString()}
-          </p>
-          <p style="margin: 5px 0; font-size: 12px; color: #606266;">
-            <strong>建筑面积：</strong>${asset.buildingArea}㎡
-          </p>
-          <p style="margin: 5px 0; font-size: 12px; color: #606266;">
-            <strong>坐标：</strong>${lng.toFixed(6)}, ${lat.toFixed(6)}
-          </p>
-        </div>
-      `,
-      offset: new window.AMap.Pixel(0, -30),
-      closeWhenClickMap: true, // 点击地图其他位置时关闭信息窗
-    })
-
-    marker.on('click', () => {
-      infoWindow.open(map.value, marker.getPosition())
-    })
-
-    map.value.add(marker)
-    markers.value.push(marker)
-  })
-
-  // 根据所有标记自动调整视图，右侧为侧边栏预留内边距
-  if (markers.value.length > 0) {
-    map.value.setFitView(markers.value, false, [30, 300, 30, 30])
+  if (!map.value || !window.AMap) {
+    console.warn('地图或AMap未加载，无法添加标记')
+    return
   }
 
-  console.log(`成功添加 ${markers.value.length} 个资产标记`)
+  try {
+    console.log('开始添加资产标记...')
+
+    // 清除现有标记
+    map.value.clearMap()
+    markers.value = []
+
+    let validMarkersCount = 0
+
+    assetList.value.forEach((asset, index) => {
+      try {
+        // 验证坐标的有效性
+        if (
+          !asset.lng ||
+          !asset.lat ||
+          isNaN(parseFloat(asset.lng)) ||
+          isNaN(parseFloat(asset.lat))
+        ) {
+          console.warn(`资产 ${asset.assetName} 的坐标无效:`, asset.lng, asset.lat)
+          return
+        }
+
+        const lng = parseFloat(asset.lng)
+        const lat = parseFloat(asset.lat)
+
+        // 检查坐标是否在合理范围内（中国境内）
+        if (lng < 73 || lng > 135 || lat < 18 || lat > 54) {
+          console.warn(`资产 ${asset.assetName} 的坐标超出中国范围:`, lng, lat)
+          return
+        }
+
+        console.log(`添加资产标记: ${asset.assetName}, 坐标: ${lng}, ${lat}`)
+
+        // 根据资产状态选择不同的标记样式
+        const markerIcon = asset.isTransferred ? 'mark_b.png' : 'mark_r.png'
+
+        const marker = new window.AMap.Marker({
+          position: [lng, lat],
+          title: '',
+          anchor: 'bottom-center',
+          icon: new window.AMap.Icon({
+            size: new window.AMap.Size(32, 32),
+            imageSize: new window.AMap.Size(32, 32),
+            image: `https://webapi.amap.com/theme/v1.3/markers/n/${markerIcon}`,
+          }),
+          zIndex: asset.isTransferred ? 100 : 50, // 已过户的资产标记层级更高
+        })
+
+        // 添加点击事件 - 定位并显示信息窗
+        marker.on('click', () => {
+          if (map.value && asset.lng && asset.lat) {
+            const lngNum = parseFloat(asset.lng)
+            const latNum = parseFloat(asset.lat)
+            if (!isNaN(lngNum) && !isNaN(latNum)) {
+              map.value.setZoomAndCenter(16, [lngNum, latNum], true, 800)
+              // 构造小弹窗内容（内联样式避免 scoped 影响）
+              const content = `
+                <div style="min-width:200px;max-width:260px;font-size:12px;line-height:1.4;">
+                  <div style="font-weight:600;margin-bottom:6px;color:#303133;">${asset.assetName}</div>
+                  <div style="color:#606266;">${asset.address}</div>
+                </div>
+              `
+              try {
+                if (infoWindow.value) {
+                  infoWindow.value.setContent(content)
+                  // 延迟打开，使视图移动后展示更平滑
+                  setTimeout(() => infoWindow.value.open(map.value, [lngNum, latNum]), 300)
+                }
+              } catch (iwOpenErr) {
+                console.warn('打开信息窗失败:', iwOpenErr)
+              }
+              console.log(`定位到资产: ${asset.assetName}, 坐标: ${lngNum}, ${latNum}`)
+            }
+          }
+        })
+
+        map.value.add(marker)
+        markers.value.push(marker)
+        validMarkersCount++
+      } catch (markerError) {
+        console.error(`添加标记失败 ${asset.assetName}:`, markerError)
+      }
+    })
+
+    // 根据所有标记自动调整视图，右侧为侧边栏预留内边距
+    if (markers.value.length > 0) {
+      try {
+        map.value.setFitView(markers.value, false, [30, 300, 30, 30])
+        console.log('地图视图已调整到适合所有标记')
+      } catch (fitViewError) {
+        console.warn('地图fitView失败:', fitViewError)
+      }
+    }
+
+    console.log(`成功添加 ${validMarkersCount} 个有效资产标记，总共 ${markers.value.length} 个标记`)
+  } catch (error) {
+    console.error('添加资产标记时出错:', error)
+    ElMessage.error('添加资产标记失败')
+  }
 }
 
 // 选择资产
 const selectAsset = (asset) => {
   selectedAsset.value = asset
-  showAssetDetail.value = true
+  // showAssetDetail.value = true
 
   // 如果地图存在，精确定位到该资产
   if (map.value && asset.lng && asset.lat) {
@@ -696,9 +727,6 @@ const selectAsset = (asset) => {
     if (!isNaN(lng) && !isNaN(lat)) {
       // 使用动画效果平滑移动到资产位置
       map.value.setZoomAndCenter(16, [lng, lat], true, 800)
-
-      // 显示定位信息
-      ElMessage.success(`已定位到: ${asset.assetName}`)
 
       // 在控制台输出详细信息
       console.log(`定位到资产: ${asset.assetName}, 坐标: ${lng}, ${lat}`)
@@ -722,27 +750,52 @@ const selectAsset = (asset) => {
 const refreshMap = () => {
   if (map.value) {
     try {
+      console.log('开始刷新地图...')
+
       // 清除现有标记
       map.value.clearMap()
+      markers.value = []
 
       // 重新添加资产标记
       addAssetMarkers()
 
       // 强制重新计算地图尺寸
       setTimeout(() => {
-        map.value.resize()
-        console.log('地图已刷新，尺寸已重新调整')
+        try {
+          map.value.resize()
+          console.log('地图尺寸已重新调整')
+        } catch (resizeError) {
+          console.warn('地图resize失败:', resizeError)
+        }
       }, 100)
+
+      // 确保地图视图正确显示所有标记
+      setTimeout(() => {
+        if (markers.value.length > 0) {
+          try {
+            map.value.setFitView(markers.value, false, [30, 300, 30, 30])
+            console.log('地图视图已调整到适合所有标记')
+          } catch (fitViewError) {
+            console.warn('地图fitView失败:', fitViewError)
+          }
+        }
+      }, 200)
 
       // 显示刷新成功信息
       ElMessage.success('地图已刷新')
 
       // 在控制台输出当前地图状态
-      const center = map.value.getCenter()
-      const zoom = map.value.getZoom()
-      console.log(
-        `地图刷新完成，当前状态: 中心点=${center.getLng().toFixed(6)}, ${center.getLat().toFixed(6)}, 缩放级别=${zoom}`,
-      )
+      setTimeout(() => {
+        try {
+          const center = map.value.getCenter()
+          const zoom = map.value.getZoom()
+          console.log(
+            `地图刷新完成，当前状态: 中心点=${center.getLng().toFixed(6)}, ${center.getLat().toFixed(6)}, 缩放级别=${zoom}`,
+          )
+        } catch (statusError) {
+          console.warn('获取地图状态失败:', statusError)
+        }
+      }, 300)
     } catch (error) {
       console.error('刷新地图时出错:', error)
       ElMessage.error('刷新地图失败，请重试')
@@ -989,24 +1042,13 @@ const goToPoi = (poi) => {
     })
     searchMarker.value = new window.AMap.Marker({
       position: [poi.location.lng, poi.location.lat],
-      title: poi.name,
+      title: '',
       anchor: 'bottom-center',
       icon,
       zIndex: 200,
     })
     map.value.add(searchMarker.value)
-
-    const infoWindow = new window.AMap.InfoWindow({
-      content: `
-        <div style="padding: 12px; min-width: 200px;">
-          <div style="font-weight:600;color:#303133;">${poi.name}</div>
-          <div style="font-size:12px;color:#606266;margin-top:4px;">${poi.address || ''}</div>
-        </div>
-      `,
-      offset: new window.AMap.Pixel(0, -30),
-      closeWhenClickMap: true,
-    })
-    infoWindow.open(map.value, searchMarker.value.getPosition())
+    // 不再创建或打开信息窗，仅跳转定位
   } catch (e) {
     // 忽略临时标记异常
   }
@@ -1040,10 +1082,32 @@ onUnmounted(() => {
 // 添加窗口resize监听器
 const handleWindowResize = () => {
   if (map.value) {
-    map.value.resize()
-    console.log('窗口大小改变，地图已重新调整')
-    // 更新坐标显示
-    updateCurrentCoordinates()
+    try {
+      // 延迟执行resize，确保DOM更新完成
+      setTimeout(() => {
+        try {
+          map.value.resize()
+          console.log('窗口大小改变，地图已重新调整')
+
+          // 更新坐标显示
+          updateCurrentCoordinates()
+
+          // 重新调整视图以适应所有标记
+          if (markers.value.length > 0) {
+            try {
+              map.value.setFitView(markers.value, false, [30, 300, 30, 30])
+              console.log('窗口大小改变后，地图视图已重新调整')
+            } catch (fitViewError) {
+              console.warn('窗口大小改变后fitView失败:', fitViewError)
+            }
+          }
+        } catch (resizeError) {
+          console.error('窗口大小改变时地图resize失败:', resizeError)
+        }
+      }, 100)
+    } catch (error) {
+      console.error('处理窗口大小改变时出错:', error)
+    }
   }
 }
 </script>
